@@ -1,13 +1,14 @@
 """
 =================================================================
-  WIND TURBINE BLADE SIMULATOR V8 - STREAMLIT EDITION
+  WIND TURBINE BLADE SIMULATOR V8 - STREAMLIT ULTIMATE EDITION
 =================================================================
 Features:
   - High-precision BEM (N=20 elements, Prandtl tip/hub loss, Buhl correction)
-  - 2D CFD Flow Inspector (Vectors & Magnitude Contour)
+  - Surface Velocity Inspector (Upper vs Lower Flow Speed)
   - Generator + Load Simulation
   - Multi-Blade Analysis
   - Export to Fusion 360 (CSV)
+  - Glassmorphism UI for Dark/Light Theme Compatibility
 =================================================================
 """
 
@@ -21,18 +22,53 @@ from io import StringIO
 from datetime import datetime
 
 # ============================================================
-# STREAMLIT PAGE CONFIG & CSS
+# STREAMLIT PAGE CONFIG & ADVANCED CSS (GLASSMORPHISM)
 # ============================================================
 st.set_page_config(layout="wide", page_title="Wind Turbine Simulator V8", page_icon="🌪️")
 
 st.markdown("""
 <style>
-    /* แต่ง UI ให้คล้าย Tkinter เดิม (เมนูซ้าย / แสดงผลขวา) */
+    /* Tabs Styling */
     .stTabs [data-baseweb="tab-list"] { gap: 10px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; font-weight: bold; background-color: #f4f7fb; border-radius: 5px 5px 0 0; padding: 0 15px;}
-    .stTabs [aria-selected="true"] { background-color: #e0e6ed; border-bottom: 3px solid #0055ff; }
-    .terminal-box { background-color: #0d1117; color: #00ff41; font-family: Consolas, monospace; padding: 15px; border-radius: 5px; white-space: pre-wrap; font-size: 14px;}
-    .diagnostic-box { background-color: #f4f7fb; padding: 15px; border-radius: 5px; border: 1px solid #ddd; }
+    .stTabs [data-baseweb="tab"] { 
+        height: 50px; 
+        font-weight: 600; 
+        border-radius: 8px 8px 0 0; 
+        padding: 0 20px; 
+    }
+    
+    /* Glassmorphism Boxes for Diagnostics & Terminals */
+    .glass-box {
+        background: rgba(130, 140, 150, 0.1);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 12px;
+        padding: 20px;
+        color: inherit;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        margin-bottom: 15px;
+    }
+    
+    .terminal-text {
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size: 14.5px;
+        line-height: 1.6;
+        white-space: pre-wrap;
+    }
+
+    .highlight-green { color: #00ff41; font-weight: bold; }
+    .highlight-red { color: #ff4b4b; font-weight: bold; }
+    .highlight-blue { color: #33a1fd; font-weight: bold; }
+    
+    /* Override Streamlit elements for cleaner look */
+    div[data-testid="stSidebar"] { padding-top: 1rem; }
+    .stButton>button { 
+        width: 100%; 
+        font-weight: bold; 
+        border-radius: 8px; 
+        transition: all 0.3s ease;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -41,7 +77,7 @@ if 'rib_data' not in st.session_state: st.session_state.rib_data = []
 if 'sim_results' not in st.session_state: st.session_state.sim_results = None
 if 'wind_speed' not in st.session_state: st.session_state.wind_speed = 3.6
 if 'rpm' not in st.session_state: st.session_state.rpm = 400.0
-if 'blade_L' not in st.session_state: st.session_state.blade_L = 300.0
+if 'blade_L' not in st.session_state: st.session_state.blade_L = 400.0
 if 'root_c' not in st.session_state: st.session_state.root_c = 70.0
 if 'tip_c' not in st.session_state: st.session_state.tip_c = 25.0
 if 'root_t' not in st.session_state: st.session_state.root_t = 20.0
@@ -64,12 +100,15 @@ def prandtl_hub_loss(B, r, R_hub, phi_rad):
 
 def get_cl_cd_naca4412(alpha_deg):
     alpha_rad = np.radians(alpha_deg)
+    
+    # Linear attached region (Thin Airfoil Theory)
     Cl_0 = 0.45 
     Cl_alpha = 2 * np.pi 
     Cl_attached = Cl_0 + Cl_alpha * alpha_rad
     Cd_min = 0.0095
     Cd_attached = Cd_min + 0.0007 * alpha_deg + 0.00012 * alpha_deg**2
     
+    # Post-Stall region (Viterna Method)
     alpha_stall = 14.0 
     Cl_max = 1.55
     AR = 8.0
@@ -84,6 +123,7 @@ def get_cl_cd_naca4412(alpha_deg):
     Cl_post = A1 * np.sin(2 * alpha_rad) + A2 * ca**2 / (sa + 1e-10) if abs(alpha_deg) > 0.1 else 0
     Cd_post = Cd_max * sa**2 + B2 * ca
     
+    # Sigmoid smooth blending
     transition_width = 2.5
     weight = 1.0 / (1.0 + np.exp(-(abs(alpha_deg) - alpha_stall) / transition_width))
     
@@ -105,6 +145,7 @@ def get_naca_coords(code, chord_mm, points):
     yt = 5 * t * (0.2969 * np.sqrt(x) - 0.1260 * x - 0.3516 * x**2 + 0.2843 * x**3 - 0.1015 * x**4)
     yc = np.zeros_like(x)
     dyc_dx = np.zeros_like(x)
+    
     if p > 0:
         front = x < p
         yc[front] = (m / p**2) * (2 * p * x[front] - x[front]**2)
@@ -112,11 +153,13 @@ def get_naca_coords(code, chord_mm, points):
         back = x >= p
         yc[back] = (m / (1 - p)**2) * ((1 - 2 * p) + 2 * p * x[back] - x[back]**2)
         dyc_dx[back] = (2 * m / (1 - p)**2) * (p - x[back])
+        
     theta = np.arctan(dyc_dx)
     xu = x - yt * np.sin(theta)
     yu = yc + yt * np.cos(theta)
     xl = x + yt * np.sin(theta)
     yl = yc - yt * np.cos(theta)
+    
     X = np.concatenate((xl[::-1], xu[1:])) * chord_mm
     Y = np.concatenate((yl[::-1], yu[1:])) * chord_mm
     return X, Y
@@ -180,6 +223,7 @@ def run_bem_high_precision(V_wind, rpm, R_mm, root_chord_mm, tip_chord_mm,
             if sigma_r * Cn != 0: a_new = 1.0 / ((4 * F * sp**2) / (sigma_r * Cn) + 1)
             else: a_new = 0
             
+            # Buhl correction
             if a_new > 0.4:
                 ac = 0.34
                 K = 4 * F * sp**2 / (sigma_r * Cn) if sigma_r * Cn != 0 else 1e6
@@ -281,14 +325,14 @@ def calculate_optimal_twist(V_wind, rpm, R_mm, target_aoa=5.0):
     return round(max(-10, min(rt, 45)), 2), round(max(-10, min(tt, 30)), 2)
 
 # ============================================================
-# MAIN UI (TABS)
+# MAIN UI: TABS 
 # ============================================================
-st.title("🌪️ 3D Wind Turbine Blade Simulator V8")
+st.title("🌪️ 3D Wind Turbine Blade Simulator V8 (Ultimate Precision)")
 
 tab_design, tab_sim, tab_cfd, tab_gen, tab_multi, tab_manual = st.tabs([
     "📏 Design & 3D", 
     "🌪️ Simulate BEM", 
-    "🌊 2D CFD Flow", 
+    "💨 Surface Velocity Flow", 
     "🔌 Gen + Load",
     "⚙️ Multi-Blade",
     "📖 Manual"
@@ -300,6 +344,7 @@ tab_design, tab_sim, tab_cfd, tab_gen, tab_multi, tab_manual = st.tabs([
 with tab_design:
     col1, col2 = st.columns([1, 2.5])
     with col1:
+        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
         st.subheader("📋 Input Parameters")
         naca_code = st.text_input("NACA Code", value="4412")
         blade_L = st.number_input("Span (Length) [mm]", value=st.session_state.blade_L, step=10.0)
@@ -317,6 +362,7 @@ with tab_design:
         st.session_state.tip_t = tip_t
 
         btn_gen = st.button("✨ Generate 3D", type="primary")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     if btn_gen or len(st.session_state.rib_data) == 0:
         n_ribs = int(np.ceil(blade_L / spacing)) + 1
@@ -347,12 +393,24 @@ with tab_design:
                 Ys.extend(rib['Y_rot'])
                 Zs.extend(rib['Z_rot'])
             
-            # Interactive 3D Plotly (สีเทาแบบ Tkinter เดิม)
+            # Interactive 3D Plotly 
             fig3d = go.Figure(data=[go.Scatter3d(
                 x=Xs, y=Zs, z=Ys, mode='markers',
-                marker=dict(size=1.5, color='#b0b5b9', opacity=0.8)
+                marker=dict(size=2, color=Zs, colorscale='Viridis', opacity=0.8)
             )])
-            fig3d.update_layout(scene=dict(xaxis_title='X [mm]', yaxis_title='Span Z [mm]', zaxis_title='Thickness Y [mm]', aspectmode='data'), height=600, margin=dict(l=0, r=0, b=0, t=0))
+            fig3d.update_layout(
+                scene=dict(
+                    xaxis_title='X [mm]', 
+                    yaxis_title='Span Z [mm]', 
+                    zaxis_title='Thickness Y [mm]', 
+                    aspectmode='data'
+                ), 
+                height=600, 
+                margin=dict(l=0, r=0, b=0, t=0),
+                paper_bgcolor='rgba(0,0,0,0)', 
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color="inherit")
+            )
             st.plotly_chart(fig3d, use_container_width=True)
             
             csv_buffer = StringIO()
@@ -369,6 +427,7 @@ with tab_design:
 with tab_sim:
     scol1, scol2 = st.columns([1, 2.5])
     with scol1:
+        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
         st.subheader("🌪️ Environment & Operation")
         v_wind = st.number_input("Wind [m/s]", value=st.session_state.wind_speed, step=0.1)
         rpm = st.number_input("RPM", value=st.session_state.rpm, step=10.0)
@@ -385,6 +444,7 @@ with tab_sim:
             st.success(f"Optimized! Root: {opt_rt}°, Tip: {opt_tt}° (Go to Design tab to re-generate)")
             
         btn_sim = st.button("🚀 Run BEM Simulation", type="primary")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     if btn_sim:
         st.session_state.sim_results = run_bem_high_precision(
@@ -397,62 +457,76 @@ with tab_sim:
         if res:
             st.subheader("📊 Diagnostic Report")
             
-            # Terminal Box
-            status_color = "#ff4444" if "STALL" in res['status'] else "#00ff41"
+            status_color = "highlight-red" if "STALL" in res['status'] else "highlight-green"
             st.markdown(f"""
-            <div class="terminal-box">=== BEM SIMULATION V8 ===
-TSR (λ)     : {res['TSR']:.2f}
-Cp          : {res['Cp']:.4f} ({res['Cp']/0.5926*100:.1f}% of Betz)
+            <div class="glass-box terminal-text">=== BEM SIMULATION V8 ===
+Wind Speed  : {v_wind} m/s
+Rotor RPM   : {rpm} 
+Blades      : {num_blades}
+─────────────────────────
+TSR (λ)     : <span class="highlight-blue">{res['TSR']:.2f}</span>
+Cp          : <span class="highlight-green">{res['Cp']:.4f}</span> ({res['Cp']/0.5926*100:.1f}% of Betz)
 P_avail     : {res['P_available_W']*1000:.2f} mW
-─────────────────
+─────────────────────────
 Thrust      : {res['thrust_N']:.4f} N
 Torque      : {res['torque_Nm']:.6f} N·m
-MECH POWER  : {res['power_W']*1000:.2f} mW
-─────────────────
-AoA         : {res['min_aoa']:.1f}° to {res['max_aoa']:.1f}°
+MECH POWER  : <span class="highlight-green">{res['power_W']*1000:.2f} mW</span>
+─────────────────────────
+AoA Range   : {res['min_aoa']:.1f}° to {res['max_aoa']:.1f}°
 Stall elems : {res['stall_count']}/20
-<span style="color: {status_color}">Status      : {res['status']}</span>
+Status      : <span class="{status_color}">{res['status']}</span>
             </div>
             """, unsafe_allow_html=True)
             
-            # Aero Graphs
             r_list = [e['r_mm']/1000 for e in res['elements']]
             lift_list = [e['Cl'] * 0.5 * rho * e['V_rel']**2 * (e['chord_mm']/1000) * 0.015 * 1000 for e in res['elements']]
             aoa_list = [e['alpha_deg'] for e in res['elements']]
             
             fig_aero, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
-            ax1.plot(r_list, lift_list, marker='o', color='#0055ff', linewidth=2.5)
-            ax1.fill_between(r_list, lift_list, color='#0055ff', alpha=0.15)
-            ax1.set_title("Lift Distribution (mN)", fontweight='bold')
-            ax1.set_xlabel("Radius (m)")
-            ax1.set_ylabel("Lift (mN)")
-            ax1.grid(color='#e0e0e0', linestyle='--')
             
-            ax2.plot(r_list, aoa_list, marker='s', color='#ff0044', linewidth=2.5)
-            ax2.axhline(14, color='black', linestyle='--', label="Stall (14°)")
-            ax2.axhline(5, color='green', linestyle=':', label="Optimal (5°)")
-            ax2.axhline(0, color='grey', linestyle='-')
-            ax2.set_title("AoA vs Radius", fontweight='bold')
-            ax2.set_xlabel("Radius (m)")
-            ax2.set_ylabel("AoA (°)")
-            ax2.legend()
-            ax2.grid(color='#e0e0e0', linestyle='--')
+            # Matplotlib styling for Glassmorphism
+            plt.style.use('dark_background') # Streamlit adapts dark backgrounds well
+            fig_aero.patch.set_alpha(0.0) 
+            ax1.patch.set_alpha(0.0)
+            ax2.patch.set_alpha(0.0)
+            
+            ax1.plot(r_list, lift_list, marker='o', color='#33a1fd', linewidth=2.5)
+            ax1.fill_between(r_list, lift_list, color='#33a1fd', alpha=0.3)
+            ax1.set_title("Lift Distribution (mN)", fontweight='bold', color='white')
+            ax1.set_xlabel("Radius (m)", color='white')
+            ax1.set_ylabel("Lift (mN)", color='white')
+            ax1.grid(color='gray', linestyle='--', alpha=0.3)
+            ax1.tick_params(colors='white')
+            
+            ax2.plot(r_list, aoa_list, marker='s', color='#ff4b4b', linewidth=2.5)
+            ax2.axhline(14, color='white', linestyle='--', label="Stall (14°)")
+            ax2.axhline(5, color='#00ff41', linestyle=':', label="Optimal (5°)")
+            ax2.axhline(0, color='gray', linestyle='-')
+            ax2.set_title("AoA vs Radius", fontweight='bold', color='white')
+            ax2.set_xlabel("Radius (m)", color='white')
+            ax2.set_ylabel("AoA (°)", color='white')
+            ax2.legend(facecolor='black', edgecolor='white', labelcolor='white')
+            ax2.grid(color='gray', linestyle='--', alpha=0.3)
+            ax2.tick_params(colors='white')
+            
             st.pyplot(fig_aero)
         else:
             st.info("👈 กดปุ่ม Run BEM Simulation เพื่อดูผลการวิเคราะห์")
 
 # ------------------------------------------------------------
-# TAB 3: 2D CFD FLOW INSPECTOR
+# TAB 3: SURFACE VELOCITY INSPECTOR (NEW CLEAR GRAPH)
 # ------------------------------------------------------------
 with tab_cfd:
-    st.subheader("🌊 2D CFD Flow - Vector & Magnitude Inspector")
+    st.subheader("💨 Surface Velocity Inspector")
+    st.markdown("ดูกราฟความเร็วลมที่ไหลผ่าน **ผิวบน (Upper)** และ **ผิวล่าง (Lower)** ของ Airfoil เพื่อดูพฤติกรรมการสร้างแรงยก (Lift Generation)")
+    
     if st.session_state.sim_results and len(st.session_state.rib_data) > 0:
         ccol1, ccol2 = st.columns([1, 2.5])
         with ccol1:
+            st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
             inspect_idx = st.slider("Select Rib Index", 0, len(st.session_state.rib_data)-1, 0)
             rib = st.session_state.rib_data[inspect_idx]
             
-            # Find closest BEM element data for this rib
             r_mm = rib['z']
             res = st.session_state.sim_results
             closest = min(res['elements'], key=lambda e: abs(e['r_mm'] - r_mm)) if res['elements'] else None
@@ -461,63 +535,89 @@ with tab_cfd:
                 rib_V_rel = closest['V_rel']
                 rib_alpha = closest['alpha_deg']
                 rib_Cl = closest['Cl']
-                rib_dL = closest['Cl'] * 0.5 * 1.225 * closest['V_rel']**2 * (rib['chord']/1000) * 0.02
                 
-                diag_color = "#d9534f" if rib_alpha > 14 else "#f0ad4e" if rib_alpha < 0 else "#5cb85c" if 3 <= rib_alpha <= 8 else "#337ab7"
-                diag_msg = "🚨 STALL (Decrease twist/increase RPM)" if rib_alpha > 14 else "⚠️ Negative AoA" if rib_alpha < 0 else "✅ Optimal AoA" if 3 <= rib_alpha <= 8 else "ℹ️ Suboptimal AoA"
+                diag_color = "#ff4b4b" if rib_alpha > 14 else "#f0ad4e" if rib_alpha < 0 else "#00ff41" if 3 <= rib_alpha <= 8 else "#33a1fd"
+                diag_msg = "🚨 STALL (Flow Separation)" if rib_alpha > 14 else "⚠️ Negative Lift" if rib_alpha < 0 else "✅ Optimal Flow" if 3 <= rib_alpha <= 8 else "ℹ️ Suboptimal"
                 
                 st.markdown(f"""
-                <div class="diagnostic-box">
                     <h4>📊 Diagnostics (Rib {inspect_idx})</h4>
-                    <b>Z Pos:</b> {r_mm:.1f} mm<br>
+                    <b>Z Position:</b> {r_mm:.1f} mm<br>
                     <b>Chord:</b> {rib['chord']:.1f} mm<br>
                     <b>Twist:</b> {rib['twist']:.1f}°<br>
-                    <b>AoA:</b> {rib_alpha:.2f}°<br>
-                    <b>V_rel:</b> {rib_V_rel:.2f} m/s<br>
-                    <b>Cl:</b> {rib_Cl:.3f}<br><br>
-                    <b>Analysis:</b><br>
-                    <span style="color: {diag_color}; font-weight: bold;">{diag_msg}</span>
-                </div>
+                    <b>Angle of Attack:</b> {rib_alpha:.2f}°<br>
+                    <b>Relative Velocity (V_rel):</b> {rib_V_rel:.2f} m/s<br>
+                    <b>Lift Coefficient (Cl):</b> {rib_Cl:.3f}<br><br>
+                    <b>Flow Status:</b><br>
+                    <span style="color: {diag_color}; font-weight: bold; font-size: 1.1em;">{diag_msg}</span>
                 """, unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
         with ccol2:
-            fig_cfd, ax = plt.subplots(figsize=(9, 6))
-            alpha_rad = np.radians(rib_alpha)
-            Xf = rib['X_2d']
-            Yf = rib['Y_2d']
-            X = Xf * np.cos(-alpha_rad) - Yf * np.sin(-alpha_rad)
-            Y = Xf * np.sin(-alpha_rad) + Yf * np.cos(-alpha_rad)
-            
-            chord = rib['chord']
-            x_grid = np.linspace(-0.6*chord, 1.5*chord, 150)
-            y_grid = np.linspace(-0.8*chord, 0.8*chord, 150)
-            XX, YY = np.meshgrid(x_grid, y_grid)
-            
-            Gamma = rib_dL / (1.225 * rib_V_rel + 1e-6)
-            xc, yc = 0.25*chord, 0
-            Rc = 0.25*chord
-            dx, dy = XX - xc, YY - yc
-            r2 = dx**2 + dy**2
-            r2[r2 < Rc**2] = Rc**2
-            
-            u = rib_V_rel * (1 - Rc**2 * (dx**2 - dy**2) / r2**2) + (Gamma * dy) / (2 * np.pi * r2)
-            v = rib_V_rel * (-2 * Rc**2 * dx * dy / r2**2) - (Gamma * dx) / (2 * np.pi * r2)
-            
-            path = Path(np.column_stack((X, Y)))
-            mask = path.contains_points(np.column_stack((XX.flatten(), YY.flatten()))).reshape(XX.shape)
-            u[mask], v[mask] = np.nan, np.nan
-            speed = np.sqrt(u**2 + v**2)
-            
-            cont = ax.contourf(XX, YY, speed, levels=40, cmap='coolwarm', alpha=0.6)
-            fig_cfd.colorbar(cont, ax=ax, label='Velocity Magnitude (m/s)')
-            ax.streamplot(x_grid, y_grid, u, v, color='white', linewidth=0.8, density=1.2)
-            ax.plot(X, Y, 'k', linewidth=2.5)
-            ax.fill(X, Y, color='#333333')
-            ax.set_title(f"Flow around Rib {inspect_idx} (AoA={rib_alpha:.1f}°)", fontsize=13, fontweight='bold')
-            ax.set_aspect('equal')
-            ax.axis('off')
-            
-            st.pyplot(fig_cfd)
+            if closest:
+                # ---------------------------------------------------------
+                # Mathematical Approximation of Surface Velocity for Display
+                # V_upper = V_rel + DeltaV, V_lower = V_rel - DeltaV
+                # ---------------------------------------------------------
+                x_c = np.linspace(0.01, 1, 100) # x/c from 0 to 1
+                
+                # Approximate shape function for pressure peak near leading edge
+                shape_func = np.sqrt((1 - x_c) / (x_c + 0.05))
+                
+                # Delta V correlates to Cl. Using thin airfoil approximation magnitude
+                delta_V = (rib_Cl * rib_V_rel / (2 * np.pi)) * shape_func
+                
+                V_upper = rib_V_rel + delta_V
+                V_lower = rib_V_rel - delta_V * 0.4 # Lower surface perturbation is usually smaller
+                
+                # Handle negative angle of attack inversion
+                if rib_alpha < 0:
+                    V_upper, V_lower = V_lower, V_upper
+                
+                # Setup Matplotlib Dual Plot
+                plt.style.use('dark_background')
+                fig_flow, (ax_vel, ax_airfoil) = plt.subplots(2, 1, figsize=(10, 6), gridspec_kw={'height_ratios': [3, 1]}, sharex=True)
+                fig_flow.patch.set_alpha(0.0) 
+                
+                # TOP PLOT: Velocity
+                ax_vel.patch.set_alpha(0.0)
+                ax_vel.plot(x_c, V_upper, color='#ff4b4b', linewidth=3, label='Upper Surface Speed (Suction)')
+                ax_vel.plot(x_c, V_lower, color='#33a1fd', linewidth=3, label='Lower Surface Speed (Pressure)')
+                ax_vel.fill_between(x_c, V_lower, V_upper, color='#00ff41', alpha=0.2, label='Velocity Difference (LIFT)')
+                ax_vel.axhline(rib_V_rel, color='gray', linestyle='--', label=f'Base V_rel ({rib_V_rel:.1f} m/s)')
+                
+                ax_vel.set_title(f"Surface Velocity Distribution along Chord (AoA = {rib_alpha:.1f}°)", fontweight='bold', color='white', pad=15)
+                ax_vel.set_ylabel("Flow Velocity (m/s)", color='white')
+                ax_vel.legend(facecolor='black', edgecolor='white', labelcolor='white', loc='upper right')
+                ax_vel.grid(color='gray', linestyle='--', alpha=0.3)
+                ax_vel.tick_params(colors='white')
+                
+                # BOTTOM PLOT: Airfoil Profile
+                ax_airfoil.patch.set_alpha(0.0)
+                
+                # Rotate the 2D NACA coordinates to the correct AoA for visual reference
+                alpha_rad = np.radians(rib_alpha)
+                Xf = rib['X_2d'] / rib['chord'] # Normalize by chord
+                Yf = rib['Y_2d'] / rib['chord']
+                X_rot = Xf * np.cos(-alpha_rad) - Yf * np.sin(-alpha_rad)
+                Y_rot = Xf * np.sin(-alpha_rad) + Yf * np.cos(-alpha_rad)
+                
+                # Shift X_rot so leading edge is at 0
+                X_rot = X_rot - np.min(X_rot)
+                
+                ax_airfoil.plot(X_rot, Y_rot, color='white', linewidth=2)
+                ax_airfoil.fill(X_rot, Y_rot, color='#555555')
+                ax_airfoil.set_xlabel("Chord Position (x/c)", color='white')
+                ax_airfoil.set_yticks([]) # Hide Y ticks for airfoil
+                ax_airfoil.grid(color='gray', linestyle='--', alpha=0.1)
+                ax_airfoil.tick_params(colors='white')
+                
+                # Adjust limits
+                ax_airfoil.set_xlim(0, 1)
+                ax_airfoil.set_ylim(-0.3, 0.3)
+                ax_airfoil.set_aspect('equal') # True proportional airfoil
+                
+                plt.tight_layout()
+                st.pyplot(fig_flow)
     else:
         st.warning("Please run the BEM Simulation in the 'Simulate BEM' tab first.")
 
@@ -527,6 +627,7 @@ with tab_cfd:
 with tab_gen:
     gcol1, gcol2 = st.columns([1, 2.5])
     with gcol1:
+        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
         st.subheader("⚙️ Generator & Gear")
         gen_v = st.number_input("Max Voltage [V]", value=10.0)
         gen_i = st.number_input("Max Current [A]", value=0.3)
@@ -538,6 +639,7 @@ with tab_gen:
         st.subheader("🔋 Load")
         load_ohm = st.slider("Load Resistance [Ω]", 0.1, 100.0, 10.0)
         time_s = st.number_input("Time [s]", value=60.0)
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with gcol2:
         if st.session_state.sim_results:
@@ -548,22 +650,26 @@ with tab_gen:
             warn = "\n⚠️ NO POWER (Blade stall)" if total_mech <= 0 else "\n⚠️ Gen overloaded (capped)" if elec['stalled'] else ""
             
             st.markdown(f"""
-            <div class="terminal-box">Rotor RPM      : {st.session_state.rpm:.1f}
+            <div class="glass-box terminal-text">Rotor RPM      : {st.session_state.rpm:.1f}
 Gen RPM        : {elec['gen_rpm']:.1f} (1:{gr})
 P_mech (total) : {total_mech*1000:.3f} mW
-─────────────────
+─────────────────────────
 R_internal     : {elec['R_internal']:.2f} Ω
 V_EMF          : {elec['V_emf']:.4f} V
-V_terminal     : {elec['V_terminal']:.4f} V
-Current        : {elec['current_A']*1000:.3f} mA
-─────────────────
-P_elec         : {elec['P_elec_mW']:.3f} mW
+V_terminal     : <span class="highlight-blue">{elec['V_terminal']:.4f} V</span>
+Current        : <span class="highlight-blue">{elec['current_A']*1000:.3f} mA</span>
+─────────────────────────
+P_elec         : <span class="highlight-green">{elec['P_elec_mW']:.3f} mW</span>
 Energy ({time_s}s)   : {energy*1000:.3f} mJ
-Efficiency     : {elec['overall_efficiency']*100:.1f}% <span style="color: #ff4444">{warn}</span>
+Efficiency     : {elec['overall_efficiency']*100:.1f}% <span class="highlight-red">{warn}</span>
             </div>
             """, unsafe_allow_html=True)
             
+            plt.style.use('dark_background')
             fig_load, ax = plt.subplots(figsize=(8, 4.5))
+            fig_load.patch.set_alpha(0.0) 
+            ax.patch.set_alpha(0.0)
+            
             r_range = np.linspace(0.5, max(100, load_ohm*2), 200)
             p_shaft = total_mech * 0.95 * 0.85
             p_curve = []
@@ -573,14 +679,16 @@ Efficiency     : {elec['overall_efficiency']*100:.1f}% <span style="color: #ff44
                 p_raw = i_r**2 * rr_val
                 p_curve.append(min(p_raw, p_shaft) * 1000)
                 
-            ax.plot(r_range, p_curve, color='#0055ff', linewidth=2.5, label='Power (mW)')
-            ax.plot(load_ohm, elec['P_elec_mW'], 'ro', markersize=10, label=f'Current ({load_ohm}Ω)')
-            ax.axvline(elec['R_internal'], color='grey', linestyle='--', label=f'Match (R_int={elec["R_internal"]:.1f}Ω)')
-            ax.set_title("Power vs Load Resistance", fontsize=12, fontweight='bold')
-            ax.set_xlabel("Load Resistance [Ω]")
-            ax.set_ylabel("Electrical Power [mW]")
-            ax.grid(color='#e0e0e0', linestyle='--')
-            ax.legend()
+            ax.plot(r_range, p_curve, color='#33a1fd', linewidth=3, label='Available Electrical Power (mW)')
+            ax.plot(load_ohm, elec['P_elec_mW'], 'ro', color='#ff4b4b', markersize=12, label=f'Operating Point ({load_ohm}Ω)')
+            ax.axvline(elec['R_internal'], color='white', linestyle='--', label=f'Match R_int={elec["R_internal"]:.1f}Ω')
+            ax.set_title("Power vs Load Resistance", fontsize=13, fontweight='bold', color='white')
+            ax.set_xlabel("Load Resistance [Ω]", color='white')
+            ax.set_ylabel("Electrical Power [mW]", color='white')
+            ax.grid(color='gray', linestyle='--', alpha=0.3)
+            ax.tick_params(colors='white')
+            ax.legend(facecolor='black', edgecolor='white', labelcolor='white')
+            
             st.pyplot(fig_load)
         else:
             st.warning("Please run the BEM Simulation in the 'Simulate BEM' tab first.")
@@ -591,8 +699,10 @@ Efficiency     : {elec['overall_efficiency']*100:.1f}% <span style="color: #ff44
 with tab_multi:
     mcol1, mcol2 = st.columns([1, 2.5])
     with mcol1:
+        st.markdown("<div class='glass-box'>", unsafe_allow_html=True)
         st.subheader("⚙️ Multi-Blade Setup")
         n = st.radio("Number of Blades", [2, 3, 4], index=1, horizontal=True)
+        st.markdown("</div>", unsafe_allow_html=True)
         
     with mcol2:
         if st.session_state.sim_results and len(st.session_state.rib_data) > 0:
@@ -602,18 +712,18 @@ with tab_multi:
             
             stall_msg = "\n🚨 BLADE STALL" if tp <= 0 else ""
             st.markdown(f"""
-            <div class="terminal-box">=== MULTI-BLADE REPORT ===
+            <div class="glass-box terminal-text">=== MULTI-BLADE REPORT ===
 Blades: {n}
 Wind  : {st.session_state.wind_speed:.2f} m/s
 RPM   : {st.session_state.rpm:.0f}
-─────────────────
+─────────────────────────
 Per blade:
   Power : {st.session_state.sim_results['power_W']*1000:.2f} mW
 
 TOTAL ({n} blades):
   Thrust: {tt_total:.4f} N
   Torque: {tq:.6f} N·m
-  POWER : {tp*1000:.2f} mW <span style="color: #ff4444">{stall_msg}</span>
+  POWER : <span class="highlight-green">{tp*1000:.2f} mW</span> <span class="highlight-red">{stall_msg}</span>
             </div>
             """, unsafe_allow_html=True)
             
@@ -631,8 +741,15 @@ TOTAL ({n} blades):
                 fig_multi.add_trace(go.Scatter3d(x=Xs, y=Zs, z=Ys, mode='markers', marker=dict(size=1.5, color='#b0b5b9', opacity=0.8), showlegend=False))
             
             L = st.session_state.blade_L
-            fig_multi.update_layout(scene=dict(xaxis_title='X [mm]', yaxis_title='Z [mm]', zaxis_title='Y [mm]', 
-                                               xaxis=dict(range=[-L, L]), yaxis=dict(range=[-L/2, L*1.5]), zaxis=dict(range=[-L, L]), aspectmode='cube'), height=600)
+            fig_multi.update_layout(
+                scene=dict(
+                    xaxis_title='X [mm]', yaxis_title='Z [mm]', zaxis_title='Y [mm]', 
+                    xaxis=dict(range=[-L, L]), yaxis=dict(range=[-L/2, L*1.5]), zaxis=dict(range=[-L, L]), 
+                    aspectmode='cube'
+                ), 
+                height=600, margin=dict(l=0, r=0, b=0, t=0),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="inherit")
+            )
             st.plotly_chart(fig_multi, use_container_width=True)
         else:
             st.warning("Please run the BEM Simulation first.")
@@ -642,6 +759,8 @@ TOTAL ({n} blades):
 # ------------------------------------------------------------
 with tab_manual:
     st.markdown("""
+    <div class='glass-box'>
+    
     ## 📖 User Manual V8 & Equations Reference
     **WIND TURBINE SIMULATOR V8** uses **Blade Element Momentum (BEM)** theory, the industry-standard for HAWT design.
     
@@ -653,4 +772,6 @@ with tab_manual:
     5. **Electrical Constraints:** `P_elec ≤ P_mech · η_gear · η_gen`
     
     *Note: Accuracy is ±10-15% for well-tuned blades. Does not include unsteady effects, yaw, or turbulence.*
-    """)
+    
+    </div>
+    """, unsafe_allow_html=True)
