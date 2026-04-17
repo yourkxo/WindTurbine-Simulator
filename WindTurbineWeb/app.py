@@ -78,8 +78,8 @@ if 'sim_results' not in st.session_state: st.session_state.sim_results = None
 if 'wind_speed' not in st.session_state: st.session_state.wind_speed = 3.6
 if 'rpm' not in st.session_state: st.session_state.rpm = 400.0
 if 'blade_L' not in st.session_state: st.session_state.blade_L = 400.0
-if 'root_c' not in st.session_state: st.session_state.root_c = 70.0
-if 'tip_c' not in st.session_state: st.session_state.tip_c = 25.0
+if 'root_c' not in st.session_state: st.session_state.root_c = 100.0
+if 'tip_c' not in st.session_state: st.session_state.tip_c = 28.0
 if 'root_t' not in st.session_state: st.session_state.root_t = 20.0
 if 'tip_t' not in st.session_state: st.session_state.tip_t = 2.0
 
@@ -393,7 +393,7 @@ with tab_design:
                 Ys.extend(rib['Y_rot'])
                 Zs.extend(rib['Z_rot'])
             
-            # Interactive 3D Plotly 
+            # Interactive 3D Plotly (แก้ไขจุดที่ติด Error แล้ว)
             fig3d = go.Figure(data=[go.Scatter3d(
                 x=Xs, y=Zs, z=Ys, mode='markers',
                 marker=dict(size=2, color=Zs, colorscale='Viridis', opacity=0.8)
@@ -408,8 +408,7 @@ with tab_design:
                 height=600, 
                 margin=dict(l=0, r=0, b=0, t=0),
                 paper_bgcolor='rgba(0,0,0,0)', 
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color="inherit")
+                plot_bgcolor='rgba(0,0,0,0)'
             )
             st.plotly_chart(fig3d, use_container_width=True)
             
@@ -485,7 +484,7 @@ Status      : <span class="{status_color}">{res['status']}</span>
             fig_aero, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
             
             # Matplotlib styling for Glassmorphism
-            plt.style.use('dark_background') # Streamlit adapts dark backgrounds well
+            plt.style.use('dark_background') 
             fig_aero.patch.set_alpha(0.0) 
             ax1.patch.set_alpha(0.0)
             ax2.patch.set_alpha(0.0)
@@ -727,7 +726,7 @@ TOTAL ({n} blades):
             </div>
             """, unsafe_allow_html=True)
             
-            # Plotly 3D Multi-blade
+            # Plotly 3D Multi-blade (แก้ไขเรื่องสีแล้ว)
             fig_multi = go.Figure()
             for b in range(n):
                 off = b * (2 * np.pi / n)
@@ -748,7 +747,7 @@ TOTAL ({n} blades):
                     aspectmode='cube'
                 ), 
                 height=600, margin=dict(l=0, r=0, b=0, t=0),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color="inherit")
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)'
             )
             st.plotly_chart(fig_multi, use_container_width=True)
         else:
